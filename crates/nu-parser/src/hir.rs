@@ -74,11 +74,7 @@ impl Call {
     pub fn switch_preset(&self, switch: &str) -> bool {
         self.named
             .as_ref()
-            .and_then(|n| n.get(switch))
-            .map(|t| match t {
-                NamedValue::PresentSwitch(_) => true,
-                _ => false,
-            })
+            .map(|n| n.switch_present(switch))
             .unwrap_or(false)
     }
 }
@@ -202,6 +198,12 @@ impl Expression {
 pub struct SpannedExpression {
     pub expr: Expression,
     pub span: Span,
+}
+
+impl SpannedExpression {
+    pub fn new(expr: Expression, span: Span) -> SpannedExpression {
+        SpannedExpression { expr, span }
+    }
 }
 
 impl std::ops::Deref for SpannedExpression {

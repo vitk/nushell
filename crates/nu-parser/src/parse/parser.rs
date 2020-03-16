@@ -372,7 +372,7 @@ fn word<'a, T, U, V>(
         let (input, _) = start_predicate(input)?;
         let (input, _) = many0(next_predicate)(input)?;
 
-        let next_char = &input.fragment.chars().nth(0);
+        let next_char = &input.fragment.chars().next();
 
         match next_char {
             Some('.') => {}
@@ -609,7 +609,7 @@ fn tight<'a>(
 
         let (input, tail) = opt(alt((many1(range_continuation), many1(dot_member))))(input)?;
 
-        let next_char = &input.fragment.chars().nth(0);
+        let next_char = &input.fragment.chars().next();
 
         if is_boundary(*next_char) {
             if let Some(tail) = tail {
@@ -685,7 +685,27 @@ pub fn token_list(input: NomSpan) -> IResult<NomSpan, Spanned<Vec<SpannedToken>>
 
                 break;
             }
-            Ok((after_node_input, next_node)) => (after_node_input, next_node),
+            Ok((after_node_input, next_node)) => {
+                let mut new_nodes = Vec::new();
+                for n in next_node {
+                    match n.unspanned() {
+                        Token::Flag(f) if f.kind == FlagKind::Shorthand && f.name > 1 => {
+                            new_nodes.push(TokenTreeBuilder::spanned_shorthand(
+                                Span::new(f.name.start(), f.name.start() + 1),
+                                Span::new(n.span().start(), f.name.start() + 1),
+                            ));
+                            for t in f.name.start() + 1..f.name.end() {
+                                new_nodes.push(TokenTreeBuilder::spanned_shorthand(
+                                    Span::for_char(t),
+                                    Span::for_char(t),
+                                ))
+                            }
+                        }
+                        _ => new_nodes.push(n),
+                    }
+                }
+                (after_node_input, new_nodes)
+            }
         };
 
         node_list.extend(next_nodes);
@@ -862,7 +882,7 @@ pub fn delimited_brace(input: NomSpan) -> IResult<NomSpan, SpannedToken> {
 
     Ok((
         input,
-        TokenTreeBuilder::spanned_square(tokens.item, (left, right), tokens.span),
+        TokenTreeBuilder::spanned_brace(tokens.item, (left, right), tokens.span),
     ))
 }
 
@@ -1325,14 +1345,6 @@ mod tests {
         equal_tokens! {
             <nodes>
             "--all-amigos" -> b::token_list(vec![b::flag("all-amigos")])
-        }
-    }
-
-    #[test]
-    fn test_shorthand_flag() {
-        equal_tokens! {
-            <nodes>
-            "-katz" -> b::token_list(vec![b::shorthand("katz")])
         }
     }
 

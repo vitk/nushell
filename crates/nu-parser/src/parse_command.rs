@@ -2,11 +2,11 @@ use crate::hir::syntax_shape::{
     BackoffColoringMode, ExpandSyntax, MaybeSpaceShape, MaybeWhitespaceEof,
 };
 use crate::hir::SpannedExpression;
-use crate::TokensIterator;
 use crate::{
     hir::{self, NamedArguments},
     Flag,
 };
+use crate::{Token, TokensIterator};
 use log::trace;
 use nu_errors::{ArgumentError, ParseError};
 use nu_protocol::{NamedType, PositionalType, Signature, SyntaxShape};
@@ -30,29 +30,32 @@ pub fn parse_command_tail(
     for (name, kind) in &config.named {
         trace!(target: "nu::parse::trace_remaining", "looking for {} : {:?}", name, kind);
 
-        tail.move_to(0);
-
         match &kind.0 {
-            NamedType::Switch => {
-                let switch = extract_switch(name, tail);
+            NamedType::Switch(s) => {
+                let switch = extract_switch(name, *s, tail);
 
                 match switch {
                     None => named.insert_switch(name, None),
-                    Some((_, flag)) => {
+                    Some((pos, flag)) => {
                         named.insert_switch(name, Some(*flag));
                         rest_signature.remove_named(name);
                         tail.color_shape(flag.color(flag.span));
+                        tail.move_to(pos);
+                        tail.expand_infallible(MaybeSpaceShape);
+                        tail.move_to(0);
                     }
                 }
             }
-            NamedType::Mandatory(syntax_type) => {
-                match extract_mandatory(config, name, tail, command_span) {
+            NamedType::Mandatory(s, syntax_type) => {
+                match extract_mandatory(config, name, *s, tail, command_span) {
                     Err(err) => {
                         // remember this error, but continue coloring
                         found_error = Some(err);
                     }
                     Ok((pos, flag)) => {
                         let result = expand_flag(tail, *syntax_type, flag, pos);
+
+                        tail.move_to(0);
 
                         match result {
                             Ok(expr) => {
@@ -69,14 +72,16 @@ pub fn parse_command_tail(
                     }
                 }
             }
-            NamedType::Optional(syntax_type) => {
-                match extract_optional(name, tail) {
+            NamedType::Optional(s, syntax_type) => {
+                match extract_optional(name, *s, tail) {
                     Err(err) => {
                         // remember this error, but continue coloring
                         found_error = Some(err);
                     }
                     Ok(Some((pos, flag))) => {
                         let result = expand_flag(tail, *syntax_type, flag, pos);
+
+                        tail.move_to(0);
 
                         match result {
                             Ok(expr) => {
@@ -109,7 +114,7 @@ pub fn parse_command_tail(
             positional = positionals;
         }
         Err(reason) => {
-            if found_error.is_none() && !tail.source().contains("help") {
+            if found_error.is_none() && !named.switch_present("help") {
                 found_error = Some(reason);
             }
         }
@@ -144,6 +149,15 @@ pub fn parse_command_tail(
         positional.extend(out);
     }
 
+    trace_remaining("after rest", &tail);
+
+    if found_error.is_none() {
+        if let Some(unexpected_argument_error) = find_unexpected_tokens(config, tail, command_span)
+        {
+            found_error = Some(unexpected_argument_error);
+        }
+    }
+
     eat_any_whitespace(tail);
 
     // Consume any remaining tokens with backoff coloring mode
@@ -153,12 +167,6 @@ pub fn parse_command_tail(
     // this solution.
     tail.sort_shapes();
 
-    if let Some(err) = found_error {
-        return Err(err);
-    }
-
-    trace_remaining("after rest", &tail);
-
     trace!(target: "nu::parse::trace_remaining", "Constructed positional={:?} named={:?}", positional, named);
 
     let positional = if positional.is_empty() {
@@ -167,8 +175,6 @@ pub fn parse_command_tail(
         Some(positional)
     };
 
-    // TODO: Error if extra unconsumed positional arguments
-
     let named = if named.named.is_empty() {
         None
     } else {
@@ -176,6 +182,10 @@ pub fn parse_command_tail(
     };
 
     trace!(target: "nu::parse::trace_remaining", "Normalized positional={:?} named={:?}", positional, named);
+
+    if let Some(err) = found_error {
+        return Err(err);
+    }
 
     Ok(Some((positional, named)))
 }
@@ -187,6 +197,8 @@ pub fn continue_parsing_positionals(
     command_span: Span,
 ) -> Result<Vec<SpannedExpression>, ParseError> {
     let mut positional = vec![];
+
+    eat_any_whitespace(tail);
 
     for arg in &config.positional {
         trace!(target: "nu::parse::trace_remaining", "Processing positional {:?}", arg);
@@ -266,20 +278,36 @@ fn expand_spaced_expr<
 
 fn extract_switch(
     name: &str,
+    short: Option<char>,
     tokens: &mut hir::TokensIterator<'_>,
 ) -> Option<(usize, Spanned<Flag>)> {
     let source = tokens.source();
-    tokens.extract(|t| t.as_flag(name, &source).map(|flag| flag.spanned(t.span())))
+    let switch = tokens.extract(|t| {
+        t.as_flag(name, short, &source)
+            .map(|flag| flag.spanned(t.span()))
+    });
+
+    match switch {
+        None => None,
+        Some((pos, flag)) => {
+            tokens.remove(pos);
+            Some((pos, flag))
+        }
+    }
 }
 
 fn extract_mandatory(
     config: &Signature,
     name: &str,
+    short: Option<char>,
     tokens: &mut hir::TokensIterator<'_>,
     span: Span,
 ) -> Result<(usize, Spanned<Flag>), ParseError> {
     let source = tokens.source();
-    let flag = tokens.extract(|t| t.as_flag(name, &source).map(|flag| flag.spanned(t.span())));
+    let flag = tokens.extract(|t| {
+        t.as_flag(name, short, &source)
+            .map(|flag| flag.spanned(t.span()))
+    });
 
     match flag {
         None => Err(ParseError::argument_error(
@@ -296,10 +324,14 @@ fn extract_mandatory(
 
 fn extract_optional(
     name: &str,
+    short: Option<char>,
     tokens: &mut hir::TokensIterator<'_>,
 ) -> Result<Option<(usize, Spanned<Flag>)>, ParseError> {
     let source = tokens.source();
-    let flag = tokens.extract(|t| t.as_flag(name, &source).map(|flag| flag.spanned(t.span())));
+    let flag = tokens.extract(|t| {
+        t.as_flag(name, short, &source)
+            .map(|flag| flag.spanned(t.span()))
+    });
 
     match flag {
         None => Ok(None),
@@ -308,6 +340,48 @@ fn extract_optional(
             Ok(Some((pos, flag)))
         }
     }
+}
+
+fn find_unexpected_tokens(
+    config: &Signature,
+    tail: &hir::TokensIterator,
+    command_span: Span,
+) -> Option<ParseError> {
+    let mut tokens = tail.clone();
+    let source = tail.source();
+
+    loop {
+        tokens.move_to(0);
+
+        if let Some(node) = tokens.peek().commit() {
+            match &node.unspanned() {
+                Token::Whitespace => {}
+                Token::Flag { .. } => {
+                    return Some(ParseError::argument_error(
+                        config.name.clone().spanned(command_span),
+                        ArgumentError::UnexpectedFlag(Spanned {
+                            item: node.span().slice(&source).to_string(),
+                            span: node.span(),
+                        }),
+                    ));
+                }
+                _ => {
+                    return Some(ParseError::argument_error(
+                        config.name.clone().spanned(command_span),
+                        ArgumentError::UnexpectedArgument(Spanned {
+                            item: node.span().slice(&source).to_string(),
+                            span: node.span(),
+                        }),
+                    ));
+                }
+            }
+        }
+
+        if tokens.at_end() {
+            break;
+        }
+    }
+    None
 }
 
 pub fn trace_remaining(desc: &'static str, tail: &hir::TokensIterator<'_>) {

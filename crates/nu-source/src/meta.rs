@@ -6,6 +6,7 @@ use derive_new::new;
 use getset::Getters;
 use serde::Deserialize;
 use serde::Serialize;
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 /// Anchors represent a location that a value originated from. The value may have been loaded from a file, fetched from a website, or parsed from some text
@@ -185,18 +186,22 @@ impl<T> Tagged<T> {
         }
     }
 
+    /// Creates a new `Tag` from the current `Tag`
     pub fn tag(&self) -> Tag {
         self.tag.clone()
     }
 
+    /// Retrieve the `Span` for the current `Tag`.
     pub fn span(&self) -> Span {
         self.tag.span
     }
 
+    /// Returns the `AnchorLocation` of the `Tag` if there is one.
     pub fn anchor(&self) -> Option<AnchorLocation> {
         self.tag.anchor.clone()
     }
 
+    /// Returns the underlying `AnchorLocation` variant type as a string.
     pub fn anchor_name(&self) -> Option<String> {
         match self.tag.anchor {
             Some(AnchorLocation::File(ref file)) => Some(file.clone()),
@@ -205,10 +210,12 @@ impl<T> Tagged<T> {
         }
     }
 
+    /// Returns a reference to the current `Tag`'s item.
     pub fn item(&self) -> &T {
         &self.item
     }
 
+    /// Returns a tuple of the `Tagged` item and `Tag`.
     pub fn into_parts(self) -> (T, Tag) {
         (self.item, self.tag)
     }
@@ -256,7 +263,18 @@ impl From<&std::ops::Range<usize>> for Span {
 
 /// The set of metadata that can be associated with a value
 #[derive(
-    Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Hash, Getters, new,
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    Hash,
+    Getters,
+    new,
 )]
 pub struct Tag {
     /// The original source for this value
@@ -329,10 +347,20 @@ impl From<&Tag> for Span {
 }
 
 impl Tag {
+    /// Creates a default `Tag' with unknown `Span` position and no `AnchorLocation`
+    pub fn default() -> Self {
+        Tag {
+            anchor: None,
+            span: Span::unknown(),
+        }
+    }
+
+    /// Creates a `Tag` from the given `Span` with no `AnchorLocation`
     pub fn unknown_anchor(span: Span) -> Tag {
         Tag { anchor: None, span }
     }
 
+    /// Creates a `Tag` from the given `AnchorLocation` for a span with a length of 1.
     pub fn for_char(pos: usize, anchor: AnchorLocation) -> Tag {
         Tag {
             anchor: Some(anchor),
@@ -340,6 +368,7 @@ impl Tag {
         }
     }
 
+    /// Creates a `Tag` for the given `AnchorLocatrion` with unknown `Span` position.
     pub fn unknown_span(anchor: AnchorLocation) -> Tag {
         Tag {
             anchor: Some(anchor),
@@ -347,6 +376,7 @@ impl Tag {
         }
     }
 
+    /// Creates a `Tag` with no `AnchorLocation` and an unknown `Span` position.
     pub fn unknown() -> Tag {
         Tag {
             anchor: None,
@@ -354,10 +384,15 @@ impl Tag {
         }
     }
 
+    /// Returns the `AnchorLocation` of the current `Tag`
     pub fn anchor(&self) -> Option<AnchorLocation> {
         self.anchor.clone()
     }
 
+    // Merges the current `Tag` with the given `Tag`.
+    ///
+    /// Both Tags must share the same `AnchorLocation`.
+    // The resulting `Tag` will have a `Span` that starts from the current `Tag` and ends at `Span` of the given `Tag`.
     pub fn until(&self, other: impl Into<Tag>) -> Tag {
         let other = other.into();
         debug_assert!(
@@ -371,6 +406,11 @@ impl Tag {
         }
     }
 
+    /// Merges the current `Tag` with the given optional `Tag`.
+    ///
+    /// Both `Tag`s must share the same `AnchorLocation`.
+    /// The resulting `Tag` will have a `Span` that starts from the current `Tag` and ends at `Span` of the given `Tag`.
+    /// Should the `None` variant be passed in, a new `Tag` with the same `Span` and `Anchorlocation` will be returned.
     pub fn until_option(&self, other: Option<impl Into<Tag>>) -> Tag {
         match other {
             Some(other) => {
@@ -446,7 +486,13 @@ pub fn span_for_spanned_list(mut iter: impl Iterator<Item = Span>) -> Span {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Hash)]
+/// A `Span` is metadata which indicates the start and end positions.
+///
+/// `Span`s are combined with `AnchorLocation`s to form another type of metadata, a `Tag`.
+/// A `Span`'s end position must be greater than or equal to its start position.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Hash,
+)]
 pub struct Span {
     start: usize,
     end: usize,
@@ -468,10 +514,17 @@ impl From<Option<Span>> for Span {
 }
 
 impl Span {
+    /// Creates a default new `Span` that has 0 start and 0 end.
+    pub fn default() -> Self {
+        Span::unknown()
+    }
+
+    /// Creates a new `Span` that has 0 start and 0 end.
     pub fn unknown() -> Span {
         Span::new(0, 0)
     }
 
+    /// Creates a new `Span` from start and end inputs. The end parameter must be greater than or equal to the start parameter.
     pub fn new(start: usize, end: usize) -> Span {
         assert!(
             end >= start,
@@ -483,6 +536,16 @@ impl Span {
         Span { start, end }
     }
 
+    /// Creates a `Span` with a length of 1 from the given position.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let char_span = Span::for_char(5);
+    ///
+    /// assert_eq!(char_span.start(), 5);
+    /// assert_eq!(char_span.end(), 6);
+    /// ```
     pub fn for_char(pos: usize) -> Span {
         Span {
             start: pos,
@@ -490,22 +553,64 @@ impl Span {
         }
     }
 
+    /// Returns a bool indicating if the given position falls inside the current `Span`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let span = Span::new(2, 8);
+    ///
+    /// assert_eq!(span.contains(5), true);
+    /// assert_eq!(span.contains(100), false);
+    /// ```
     pub fn contains(&self, pos: usize) -> bool {
         self.start <= pos && self.end >= pos
     }
 
+    /// Returns a new Span by merging an earlier Span with the current Span.
+    ///
+    /// The resulting Span will have the same start position as the given Span and same end as the current Span.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let original_span = Span::new(4, 6);
+    /// let earlier_span = Span::new(1, 3);
+    /// let merged_span = origin_span.since(earlier_span);
+    ///
+    /// assert_eq!(merged_span.start(), 1);
+    /// assert_eq!(merged_span.end(), 6);
+    /// ```
     pub fn since(&self, other: impl Into<Span>) -> Span {
         let other = other.into();
 
         Span::new(other.start, self.end)
     }
 
+    /// Returns a new Span by merging a later Span with the current Span.
+    ///
+    /// The resulting Span will have the same start position as the current Span and same end as the given Span.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let original_span = Span::new(4, 6);
+    /// let later_span = Span::new(9, 11);
+    /// let merged_span = origin_span.until(later_span);
+    ///
+    /// assert_eq!(merged_span.start(), 4);
+    /// assert_eq!(merged_span.end(), 11);
+    /// ```
     pub fn until(&self, other: impl Into<Span>) -> Span {
         let other = other.into();
 
         Span::new(self.start, other.end)
     }
 
+    /// Returns a new Span by merging a later Span with the current Span.
+    ///
+    /// If the given Span is of the None variant,
+    /// A Span with the same values as the current Span is returned.
     pub fn until_option(&self, other: Option<impl Into<Span>>) -> Span {
         match other {
             Some(other) => {
@@ -529,20 +634,46 @@ impl Span {
         self.slice(source).to_string().spanned(*self)
     }
 
+    /// Returns the start position of the current Span.
     pub fn start(&self) -> usize {
         self.start
     }
 
+    /// Returns the end position of the current Span.
     pub fn end(&self) -> usize {
         self.end
     }
 
+    /// Returns a bool if the current Span indicates an "unknown"  position.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let unknown_span = Span::unknown();
+    /// let known_span = Span::new(4, 6);
+    ///
+    /// assert_eq!(unknown_span.is_unknown(), true);
+    /// assert_eq!(known_span.is_unknown(), false);
+    /// ```
     pub fn is_unknown(&self) -> bool {
         self.start == 0 && self.end == 0
     }
 
+    /// Returns a slice of the input that covers the start and end of the current Span.
     pub fn slice<'a>(&self, source: &'a str) -> &'a str {
         &source[self.start..self.end]
+    }
+}
+
+impl PartialOrd<usize> for Span {
+    fn partial_cmp(&self, other: &usize) -> Option<Ordering> {
+        (self.end - self.start).partial_cmp(other)
+    }
+}
+
+impl PartialEq<usize> for Span {
+    fn eq(&self, other: &usize) -> bool {
+        (self.end - self.start) == *other
     }
 }
 

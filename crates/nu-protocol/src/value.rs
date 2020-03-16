@@ -15,6 +15,7 @@ use crate::value::primitive::Primitive;
 use crate::value::range::{Range, RangeInclusion};
 use crate::{ColumnPath, PathMember};
 use bigdecimal::BigDecimal;
+use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use nu_errors::ShellError;
 use nu_source::{AnchorLocation, HasSpan, Span, Spanned, Tag};
@@ -122,7 +123,6 @@ impl UntaggedValue {
     }
 
     /// Helper for creating row values
-    #[allow(unused)]
     pub fn row(entries: IndexMap<String, Value>) -> UntaggedValue {
         UntaggedValue::Row(entries.into())
     }
@@ -200,6 +200,10 @@ impl UntaggedValue {
     /// Helper for creating datatime values
     pub fn system_date(s: SystemTime) -> UntaggedValue {
         UntaggedValue::Primitive(Primitive::Date(s.into()))
+    }
+
+    pub fn date(d: impl Into<DateTime<Utc>>) -> UntaggedValue {
+        UntaggedValue::Primitive(Primitive::Date(d.into()))
     }
 
     /// Helper for creating the Nothing value
@@ -367,4 +371,31 @@ impl From<String> for UntaggedValue {
     fn from(input: String) -> UntaggedValue {
         UntaggedValue::Primitive(Primitive::String(input))
     }
+}
+
+impl From<ShellError> for UntaggedValue {
+    fn from(e: ShellError) -> Self {
+        UntaggedValue::Error(e)
+    }
+}
+
+pub fn merge_descriptors(values: &[Value]) -> Vec<String> {
+    let mut ret: Vec<String> = vec![];
+    let value_column = "<value>".to_string();
+    for value in values {
+        let descs = value.data_descriptors();
+
+        if descs.is_empty() {
+            if !ret.contains(&value_column) {
+                ret.push("<value>".to_string());
+            }
+        } else {
+            for desc in value.data_descriptors() {
+                if !ret.contains(&desc) {
+                    ret.push(desc);
+                }
+            }
+        }
+    }
+    ret
 }
